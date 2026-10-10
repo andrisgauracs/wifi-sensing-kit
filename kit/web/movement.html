@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Movement</title>
+<style>
+/* Same system as the other pages. Grey = what the camera sees (ground truth),
+   cyan = what WiFi infers, amber = recording / disagreement. Stage 1920x1080, width-fit, page scrolls. */
+@font-face { font-family: "Inter"; src: url(assets/fonts/inter-500.woff2) format("woff2"); font-weight: 500; }
+@font-face { font-family: "Inter"; src: url(assets/fonts/inter-700.woff2) format("woff2"); font-weight: 700; }
+@font-face { font-family: "JetBrains Mono"; src: url(assets/fonts/jbmono-400.woff2) format("woff2"); font-weight: 400; }
+@font-face { font-family: "JetBrains Mono"; src: url(assets/fonts/jbmono-600.woff2) format("woff2"); font-weight: 600; }
+:root { --ground:#0b0e19; --panel:rgba(18,23,40,.82); --line:rgba(160,175,210,.16); --ink:#eef1f8; --ink-2:#9aa3b8; --ink-3:#5d6680; --camera:#b9c0cf; --wifi:#38e1ff; --test:#ffb547; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { width:100%; height:100%; background:var(--ground); color:var(--ink); font-family:"Inter",sans-serif; overflow-x:hidden; overflow-y:auto; -webkit-font-smoothing:antialiased; }
+body { height:auto; min-height:100%; overflow:visible; }
+button { font:inherit; color:inherit; cursor:pointer; }
+#viewport { position:relative; width:100%; overflow:hidden; }
+#stage { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.bg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.title { position:absolute; left:120px; top:84px; font-size:60px; font-weight:700; letter-spacing:-.03em; }
+.acc { color:var(--wifi); }
+.panel { background:var(--panel); border:1px solid var(--line); border-radius:20px; }
+/* camera: 860x645 (4:3) */
+#cam { position:absolute; left:120px; top:200px; width:860px; height:645px; overflow:hidden; }
+#cam video, #cam canvas { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); }
+#cam.covered video, #cam.covered canvas { visibility:hidden; }
+#cam .covered-msg { position:absolute; inset:0; display:none; place-items:center; font-size:34px; font-weight:500; color:var(--ink-3); }
+#cam.covered .covered-msg { display:grid; }
+#cam-label { position:absolute; left:20px; top:20px; padding:10px 18px; border-radius:12px; background:rgba(8,10,18,.75); font-size:26px; font-weight:500; color:var(--camera); }
+#cam-label b { color:var(--ink); }
+#cam.covered #cam-label { display:none; }
+#cam-status { position:absolute; right:20px; top:26px; font-family:"JetBrains Mono"; font-size:18px; color:var(--ink-2); }
+/* wifi answer */
+#wifi { position:absolute; left:1030px; top:200px; width:770px; height:645px; padding:34px 40px; }
+#wifi .k { font-size:24px; color:var(--ink-2); font-weight:500; }
+#ans { margin-top:14px; font-size:88px; font-weight:700; letter-spacing:-.04em; line-height:1; color:var(--wifi); }
+#ans.unsure { color:var(--ink-3); }
+#ans-s { margin-top:16px; font-family:"JetBrains Mono"; font-size:22px; color:var(--ink-2); min-height:28px; }
+#bars { margin-top:26px; display:flex; flex-direction:column; gap:11px; }
+.row { display:grid; grid-template-columns:170px 1fr 70px; gap:18px; align-items:center; }
+.row .n { font-size:22px; font-weight:500; color:var(--ink-2); text-align:right; }
+.row .t { height:24px; border-radius:7px; background:rgba(255,255,255,.05); overflow:hidden; }
+.row .f { height:100%; width:0; background:var(--ink-3); border-radius:7px; transition:width .35s ease; }
+.row.top .f { background:var(--wifi); }
+.row.top .n { color:var(--ink); }
+.row .v { font-family:"JetBrains Mono"; font-size:20px; color:var(--ink-2); }
+#agree { position:absolute; left:40px; bottom:28px; right:40px; font-family:"JetBrains Mono"; font-size:20px; color:var(--ink-2); }
+#agree b { color:var(--ink); font-size:26px; }
+/* controls */
+#panel { position:absolute; left:120px; top:880px; width:1680px; display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+.btn { padding:12px 20px; border-radius:12px; background:#151a2c; border:1px solid var(--line); font-size:20px; }
+.btn.go { border-color:var(--test); color:var(--test); }
+.btn.on { border-color:var(--wifi); color:var(--wifi); }
+.btn small { font-family:"JetBrains Mono"; font-size:15px; color:var(--ink-3); margin-left:8px; }
+#score { margin-left:auto; font-family:"JetBrains Mono"; font-size:19px; color:var(--ink-2); text-align:right; line-height:1.45; }
+#score b { color:var(--ink); }
+#counts { width:100%; font-family:"JetBrains Mono"; font-size:16px; color:var(--ink-3); margin-top:6px; }
+#overlay { position:absolute; left:1030px; top:200px; width:770px; height:645px; display:none; place-items:center; background:rgba(8,10,18,.92); border-radius:20px; border:1px solid var(--test); }
+#overlay.on { display:grid; }
+#overlay div { text-align:center; padding:0 30px; }
+#overlay b { display:block; font-size:120px; font-family:"JetBrains Mono"; color:var(--test); line-height:1.1; }
+#overlay span { display:block; font-size:38px; font-weight:700; margin-top:8px; }
+#overlay em { display:block; margin-top:16px; font-style:normal; font-size:22px; color:var(--ink-2); }
+#overlay i { display:block; margin-top:22px; font-style:normal; font-size:20px; font-family:"JetBrains Mono"; color:var(--camera); }
+/* test run: instructions in a banner over the camera so the WiFi answer stays visible */
+#banner { position:absolute; left:120px; top:735px; width:860px; height:110px; display:none; align-items:center; gap:26px; padding:0 28px; background:rgba(8,10,18,.88); border-top:2px solid var(--test); border-radius:0 0 20px 20px; }
+#banner.on { display:flex; }
+#banner b { font-family:"JetBrains Mono"; font-size:56px; color:var(--test); min-width:80px; }
+#banner span { font-size:32px; font-weight:700; }
+#banner i { margin-left:auto; font-style:normal; font-family:"JetBrains Mono"; font-size:19px; color:var(--camera); text-align:right; }
+#verdict { position:absolute; left:40px; right:40px; bottom:70px; font-size:28px; font-weight:700; opacity:0; transition:opacity .3s; }
+#verdict.on { opacity:1; }
+#summary { position:absolute; left:1030px; top:200px; width:770px; height:645px; display:none; padding:34px 40px; background:rgba(14,18,32,.97); border:1px solid var(--wifi); border-radius:20px; cursor:pointer; }
+#summary.on { display:block; }
+#summary h3 { font-size:26px; font-weight:500; color:var(--ink-2); }
+#summary .big { font-family:"JetBrains Mono"; font-size:96px; font-weight:600; color:var(--wifi); margin:8px 0 6px; }
+#summary .sub { font-family:"JetBrains Mono"; font-size:19px; color:var(--ink-3); margin-bottom:18px; }
+#summary .r { display:grid; grid-template-columns:220px 1fr 80px; gap:18px; align-items:center; margin:8px 0; font-size:23px; }
+#summary .r .t { height:18px; border-radius:6px; background:rgba(255,255,255,.05); overflow:hidden; }
+#summary .r .f { height:100%; background:var(--wifi); border-radius:6px; }
+#summary .r .v { font-family:"JetBrains Mono"; color:var(--ink-2); }
+#warn { position:fixed; left:50%; top:12px; transform:translateX(-50%); z-index:9; display:none; padding:12px 22px; border-radius:12px; background:#3a1218; border:1px solid #ff6b6b; color:#ffd5d5; font-size:16px; }
+#warn.on { display:block; }
+#check { position:absolute; left:1030px; top:200px; width:770px; height:645px; display:none; padding:30px 36px; background:rgba(14,18,32,.97); border:1px solid var(--test); border-radius:20px; }
+#check.on { display:block; }
+#check h3 { font-size:28px; font-weight:700; }
+#check p { font-size:18px; color:var(--ink-2); margin:8px 0 18px; }
+#check .r { display:grid; grid-template-columns:160px 1fr 110px 150px; gap:14px; align-items:center; margin:7px 0; font-size:21px; }
+#check .t { height:16px; border-radius:5px; background:rgba(255,255,255,.05); overflow:hidden; }
+#check .f { height:100%; border-radius:5px; }
+#check .v { font-family:"JetBrains Mono"; font-size:17px; color:var(--ink-2); }
+#check button { padding:7px 12px; border-radius:9px; background:#151a2c; border:1px solid var(--test); color:var(--test); font-size:16px; }
+#check .close { position:absolute; right:22px; top:20px; border-color:var(--line); color:var(--ink-2); }
+#nav { position:fixed; left:14px; bottom:10px; font-size:13px; color:var(--ink-3); }
+#nav a { color:var(--ink-2); }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+  <img class="bg" src="assets/bg-16x9.png" alt="">
+  <div class="title">What am I <span class="acc">doing</span>?</div>
+  <div id="cam" class="panel">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="skel"></canvas>
+    <div class="covered-msg">Camera covered — WiFi only</div>
+    <div id="cam-label">Camera sees: <b id="cam-l">–</b></div>
+    <div id="cam-status">starting camera…</div>
+  </div>
+  <div id="wifi" class="panel">
+    <div class="k">WiFi thinks</div>
+    <div id="ans" class="unsure">–</div>
+    <div id="ans-s">not trained yet</div>
+    <div id="bars"></div>
+    <div id="verdict"></div>
+    <div id="agree"></div>
+  </div>
+  <div id="banner"><b id="bn-n">5</b><span id="bn-t"></span><i id="bn-c"></i></div>
+  <div id="summary" title="click to close"></div>
+  <div id="check"></div>
+  <div id="overlay"><div><b id="ov-n">5</b><span id="ov-t"></span><em id="ov-h"></em><i id="ov-c"></i></div></div>
+  <div id="panel">
+    <button class="btn go" id="rec-train">Record training<small>3 rounds · ~9 min</small></button>
+    <button class="btn go" id="rec-test">Record test<small>1 round · ~3 min · demo view</small></button>
+    <button class="btn" id="cover">Cover camera</button>
+    <button class="btn" id="checkbtn">Check training</button>
+    <button class="btn" id="clear">Clear all</button>
+    <div id="score"></div>
+    <div id="counts"></div>
+  </div>
+</div></div>
+<div id="warn"></div>
+<div id="nav"><a href="/">signals</a> · <a href="/room.html">room map</a> · movement · Esc stops a recording</div>
+<script type="module">
+import { PoseLandmarker, FilesetResolver } from "./vendor/mediapipe/vision_bundle.mjs";
+const $ = s => document.querySelector(s);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const TAB = Math.random().toString(36).slice(2);   // identifies this page, so the server can spot a second open tab
+
+// The movements, in recording order. The camera's label (not the instruction) is what WiFi learns.
+const MOVES = [
+  { label: "nobody",   name: "Nobody",    secs: 15, lead: 8, go: "Step out of the camera's view", hint: "Leave the living room" },
+  { label: "standing", name: "Standing",  secs: 15, lead: 5, go: "Stand still-ish",               hint: "Face the camera, whole body in view" },
+  { label: "walking",  name: "Walking",   secs: 20, lead: 5, go: "Walk around",                   hint: "Back and forth across the room, normal pace" },
+  { label: "squatting",name: "Squatting", secs: 20, lead: 5, go: "Do squats",                     hint: "Steady squats, whole body in view" },
+  { label: "jumping",  name: "Jumping",   secs: 15, lead: 5, go: "Jump on the spot",              hint: "Jumping jacks or small jumps" },
+  { label: "spinning", name: "Spinning",  secs: 15, lead: 5, go: "Spin slowly on the spot",       hint: "Keep turning in place, about one turn every 2–3 s" },
+  { label: "sitting",  name: "Sitting",   secs: 20, lead: 6, go: "Sit down",                      hint: "On a chair or the couch, still in view" },
+  { label: "waving",   name: "Waving",    secs: 15, lead: 5, go: "Wave your arms",                hint: "Standing, hands above your shoulders" },
+];
+const NAME = Object.fromEntries(MOVES.map(m => [m.label, m.name]));
+$("#bars").innerHTML = MOVES.map(m => `<div class="row" data-l="${m.label}"><div class="n">${m.name}</div><div class="t"><div class="f"></div></div><div class="v">–</div></div>`).join("");
+
+/* ---------- layout ---------- */
+let scale = 1;
+function fit() { scale = document.documentElement.clientWidth / 1920; $("#stage").style.transform = `scale(${scale})`; $("#viewport").style.height = 1080 * scale + "px"; }
+addEventListener("resize", fit); fit();
+
+/* ---------- camera + MediaPipe pose (runs locally; only the movement label leaves this page) ---------- */
+const video = $("#video"), skel = $("#skel");
+let landmarker = null, lastSent = 0, camLabel = "–";
+const hist = [];   // recent samples (8/s): { t, present, present2, hip, torso, knee2, thigh, shW, hipPx, wristsUp }
+const P = { NOSE: 0, LEYE: 2, REYE: 5, LS: 11, RS: 12, LW: 15, RW: 16, LH: 23, RH: 24, LK: 25, RK: 26, LA: 27, RA: 28 };
+const BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28]];
+
+function angle(a, b, c) { const v1 = [a.x - b.x, a.y - b.y], v2 = [c.x - b.x, c.y - b.y]; const d = Math.hypot(...v1) * Math.hypot(...v2) || 1; return Math.acos(Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1]) / d))) * 180 / Math.PI; }
+const vis = (l, i, th = 0.5) => (l[i].visibility ?? 1) > th;
+const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+const span = a => a.length ? Math.max(...a) - Math.min(...a) : 0;
+const std = a => { if (!a.length) return 0; const m = a.reduce((x, y) => x + y, 0) / a.length; return Math.sqrt(a.reduce((x, y) => x + (y - m) ** 2, 0) / a.length); };
+const median = a => { const b = [...a].sort((x, y) => x - y); return b.length ? b[b.length >> 1] : 0; };
+
+/* Movement rules — validated offline on the 2026-10-10 session (same MediaPipe model, camera image
+   from the screen recording, 8 frames/s): correct labels 40% -> 77% (squat 5 -> 81%, sit 0 -> 79%,
+   spin 0 -> 49%). What the measurements showed:
+   - facing the camera, a squat barely changes the knee angle *in the image* (knees bend toward the
+     lens); what changes is how tall your thigh looks -> compare with your own standing thigh length
+   - sitting side-on hides the far leg and both ankles -> one visible leg is enough
+   - the pose model never reports your face as hidden, even from behind -> spin = shoulder width
+     swinging wide/narrow while you stay in place
+   - bending into a squat shrinks the torso in the image like walking toward the camera does ->
+     "approaching" = hip width in pixels growing, which a squat doesn't do
+   Frames are sampled at 8/s (as in the validation): the spin rule counts swings, and 30 fps pose
+   jitter would add false ones. */
+let thighBase = null;   // your standing thigh length (vertical, / torso), learned while you stand
+
+function classify(now) {
+  const H = hist.filter(h => now - h.t < 1560), HL = hist.filter(h => now - h.t < 2560);   // 13 / 21 samples at 8/s
+  if (H.length < 8) return "unsure";
+  const seen = H.filter(h => h.present), P_ = H.filter(h => h.present2);
+  if (seen.length < H.length * 0.3) return "nobody";
+  if (seen.length < H.length * 0.7) return "unsure";                       // walking in or out of view
+  if (P_.length < H.length * 0.6) return "unsure";
+  const torso = median(P_.map(h => h.torso)), xs = P_.map(h => h.hip.x), ys = P_.map(h => h.hip.y);
+  const dt = (P_[P_.length - 1].t - P_[0].t) / 1000 || 1.5;
+  const hSpeed = Math.abs(xs[xs.length - 1] - xs[0]) / torso / dt + span(xs) / torso * 0.5;
+  const scaleChange = span(P_.map(h => h.torso)) / torso, vStd = std(ys) / torso, vSpan = span(ys) / torso;
+  const th = P_.map(h => h.thigh).filter(v => v != null), k2 = P_.map(h => h.knee2).filter(v => v != null);
+  const comp = th.length && thighBase ? Math.min(...th) / thighBase : null;   // 1 = standing, lower = legs folded
+  const armsUp = P_.filter(h => h.wristsUp).length / P_.length;
+  const L2 = HL.filter(h => h.present2), sw = L2.map(h => h.shW), swMed = median(sw);
+  let crossings = 0; for (let i = 1; i < sw.length; i++) if (Math.sign(sw[i] - swMed) !== Math.sign(sw[i - 1] - swMed)) crossings++;
+  const stillPlace = L2.length > 6 && span(L2.map(h => h.hip.x)) / torso < 1.0 && span(L2.map(h => h.torso)) / median(L2.map(h => h.torso)) < 0.25;
+  const hp = P_.map(h => h.hipPx), approach = span(hp) / median(hp) > 0.3;
+  const legsStraight = comp == null || comp > 0.8;
+  let lab = "unsure";
+  if (hSpeed > 0.9 || (approach && scaleChange > 0.2) || (scaleChange > 0.35 && legsStraight)) lab = "walking";
+  else if (sw.length > 6 && span(sw) > 0.3 && crossings >= 3 && stillPlace) lab = "spinning";
+  else if (comp != null && comp < 0.75 && vSpan > 0.12 && !approach) lab = "squatting";
+  else if (comp != null && comp < 0.65 && vSpan <= 0.12) lab = "sitting";
+  else if (k2.length && Math.min(...k2) < 110 && vStd < 0.05) lab = "sitting";
+  else if (vSpan > 0.2) lab = comp != null && comp < 0.85 ? "squatting" : "jumping";
+  else if (vStd > 0.08) lab = "jumping";
+  else if (armsUp > 0.4) lab = "waving";
+  else if (vStd < 0.05 && k2.length >= P_.length * 0.5) lab = "standing";
+  if (lab === "standing" && th.length) { const m = median(th); thighBase = thighBase == null ? m : 0.95 * thighBase + 0.05 * m; }
+  return lab;
+}
+
+let lastSample = -1e9;
+function onFrame(lm, now) {
+  if (now - lastSample >= 120) {           // ~8 samples per second, as validated
+    lastSample = now;
+    if (!lm) hist.push({ t: now, present: false, present2: false });
+    else {
+      const present = vis(lm, P.LS) && vis(lm, P.RS) && vis(lm, P.LH) && vis(lm, P.RH);
+      const present2 = (vis(lm, P.LS, .4) || vis(lm, P.RS, .4)) && (vis(lm, P.LH, .4) || vis(lm, P.RH, .4));
+      const sh = mid(lm[P.LS], lm[P.RS]), hip = mid(lm[P.LH], lm[P.RH]);
+      const torso = Math.hypot(sh.x - hip.x, sh.y - hip.y) || 1e-3;
+      // legs measured one side at a time: a hip and its knee are enough (ankles often hidden or cut off)
+      const legs = [[P.LH, P.LK, P.LA], [P.RH, P.RK, P.RA]].filter(([h, k]) => vis(lm, h, .4) && vis(lm, k, .25));
+      hist.push({ t: now, present, present2, hip, torso,
+        knee2: legs.length ? Math.min(...legs.map(([h, k, a]) => angle(lm[h], lm[k], lm[a]))) : null,
+        thigh: legs.length ? Math.min(...legs.map(([h, k]) => Math.abs(lm[k].y - lm[h].y))) / torso : null,
+        shW: Math.abs(lm[P.LS].x - lm[P.RS].x) / torso,
+        hipPx: Math.abs(lm[P.LH].x - lm[P.RH].x) + 1e-4,
+        wristsUp: (vis(lm, P.LW) && lm[P.LW].y < lm[P.LS].y - 0.1 * torso) || (vis(lm, P.RW) && lm[P.RW].y < lm[P.RS].y - 0.1 * torso) });
+    }
+    while (hist.length && now - hist[0].t > 3000) hist.shift();
+    camLabel = classify(now);
+    $("#cam-l").textContent = camLabel === "unsure" ? "not sure" : NAME[camLabel] || camLabel;
+  }
+  if (now - lastSent > 100) { lastSent = now; fetch("/api/pose", { method: "POST", body: JSON.stringify({ label: camLabel, tab: TAB }) }).catch(() => {}); }
+}
+
+function drawSkeleton(lm) {
+  const c = skel, ctx = c.getContext("2d"); c.width = video.videoWidth || 640; c.height = video.videoHeight || 480;
+  ctx.clearRect(0, 0, c.width, c.height); if (!lm) return;
+  ctx.strokeStyle = "#b9c0cf"; ctx.fillStyle = "#eef1f8"; ctx.lineWidth = 5; ctx.lineCap = "round";
+  for (const [a, b] of BONES) { if (!vis(lm, a) || !vis(lm, b)) continue; ctx.beginPath(); ctx.moveTo(lm[a].x * c.width, lm[a].y * c.height); ctx.lineTo(lm[b].x * c.width, lm[b].y * c.height); ctx.stroke(); }
+  for (const i of [0, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]) if (vis(lm, i)) { ctx.beginPath(); ctx.arc(lm[i].x * c.width, lm[i].y * c.height, 6, 0, 7); ctx.fill(); }
+}
+
+async function startCamera() {
+  try {
+    const fs = await FilesetResolver.forVisionTasks(new URL("./vendor/mediapipe/wasm", location.href).href);
+    landmarker = await PoseLandmarker.createFromOptions(fs, {
+      baseOptions: { modelAssetPath: "./vendor/mediapipe/pose_landmarker_full.task", delegate: "GPU" },
+      runningMode: "VIDEO", numPoses: 1,
+    });
+    video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+    await video.play();
+    $("#cam-status").textContent = "pose model running on this Mac";
+    let lastT = -1;
+    const tick = () => {
+      const now = performance.now();
+      if (video.readyState >= 2 && video.currentTime !== lastT) {
+        lastT = video.currentTime;
+        const res = landmarker.detectForVideo(video, now);
+        const lm = res.landmarks && res.landmarks[0];
+        drawSkeleton(lm); onFrame(lm, now);
+      }
+      requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (e) { $("#cam-status").textContent = "camera / pose model error: " + e.message; console.error(e); }
+}
+startCamera();
+
+/* ---------- guided recording ---------- */
+// Training: instructions over the WiFi panel (nothing to show there yet).
+// Test: a banner over the camera so the WiFi answer stays visible on camera, plus a verdict per movement.
+let busy = false, abort = false, wifiBest = null, tally = {};
+function show(session, n, title, cam) {
+  if (session === "test") { $("#banner").classList.add("on"); $("#bn-n").textContent = n; $("#bn-t").textContent = title; $("#bn-c").innerHTML = cam; }
+  else { $("#overlay").classList.add("on"); $("#ov-n").textContent = n; $("#ov-t").textContent = title; $("#ov-c").innerHTML = cam; }
+}
+async function segment(m, session, rnd, rounds) {
+  $("#ov-h").textContent = m.hint;
+  const tag = `${session === "train" ? "Training" : "Test"} · round ${rnd}/${rounds}`;
+  for (let i = m.lead; i > 0 && !abort; i--) { show(session, i, m.go, `${tag}<br>next: ${m.name}`); await sleep(1000); }
+  if (abort) return false;
+  const r = await fetch("/api/move/rec", { method: "POST", body: JSON.stringify({ on: true, session, round: rnd }) }).then(r => r.json());
+  if (!r.ok) { show(session, "!", r.error, ""); await sleep(3500); return false; }
+  let hit = 0, n = 0;
+  for (let i = m.secs; i > 0 && !abort; i--) {
+    const seen = camLabel === "unsure" ? "not sure" : NAME[camLabel] || camLabel;
+    const saved = recInfo ? recInfo.n : 0, waited = m.secs - i;
+    const savedTxt = waited >= 4 && saved === 0 ? `<span style="color:#ff6b6b">nothing saved yet — camera unsure or WiFi links down</span>` : `saved: ${saved} windows`;
+    show(session, i, session === "test" ? m.go : `Recording · ${m.name}`,
+      (camLabel === m.label ? `camera sees: ${seen} ✓` : `<span style="color:#ffb547">camera sees: ${seen}</span>`) + `<br>${savedTxt}`);
+    // the camera is the judge; skip the first 3 s while the WiFi answer (averaged over 3 s) catches up
+    if (session === "test" && m.secs - i >= 3 && camLabel !== "unsure") { n++; hit += wifiBest === camLabel; }
+    await sleep(1000);
+  }
+  await fetch("/api/move/rec", { method: "POST", body: JSON.stringify({ on: false }) });
+  if (session === "test" && n) {
+    tally[m.label] = [hit, n];
+    const v = $("#verdict"), pc = Math.round(100 * hit / n);
+    v.innerHTML = `${m.name}: WiFi got it <span style="color:${pc >= 50 ? "#38e1ff" : "#ffb547"}">${pc}%</span> of the time`;
+    v.classList.add("on"); setTimeout(() => v.classList.remove("on"), 4000);
+  }
+  return !abort;
+}
+function summary() {
+  const rows = MOVES.filter(m => tally[m.label]);
+  if (!rows.length) return;
+  const H = rows.reduce((a, m) => a + tally[m.label][0], 0), N = rows.reduce((a, m) => a + tally[m.label][1], 0);
+  $("#summary").innerHTML = `<h3>Test run · WiFi only, judged by the camera</h3><div class="big">${Math.round(100 * H / N)}%</div>
+    <div class="sub">of ${N} seconds · guessing would get ${Math.round(100 / MOVES.length)}%</div>` +
+    rows.map(m => { const [h, n] = tally[m.label], pc = Math.round(100 * h / n); return `<div class="r"><div>${m.name}</div><div class="t"><div class="f" style="width:${pc}%"></div></div><div class="v">${pc}%</div></div>`; }).join("");
+  $("#summary").classList.add("on");
+}
+$("#summary").onclick = () => $("#summary").classList.remove("on");
+// Training check: windows saved per movement (2 windows per second recorded). "Enough" = at least
+// the equivalent of 2 full rounds of that movement. Short movements get a one-movement top-up.
+let lastCounts = {};
+function trainingCheck() {
+  const c = lastCounts.train || {};
+  const rows = MOVES.map(m => { const n = c[m.label] || 0, need = Math.round(2 * m.secs * 2 * 0.8); return { m, n, need, ok: n >= need }; });
+  $("#check").innerHTML = `<button class="close" id="ck-x">close</button><h3>Training check</h3>
+    <p>${rows.every(r => r.ok) ? "Every movement has enough examples. You're done training — record the test when ready." : "Top up only what's short — each button records just that one movement."}</p>` +
+    rows.map(r => `<div class="r"><div>${r.m.name}</div><div class="t"><div class="f" style="width:${Math.min(100, 100 * r.n / r.need)}%;background:${r.ok ? "#38e1ff" : "#ffb547"}"></div></div>
+      <div class="v">${r.n} / ${r.need}</div><div>${r.ok ? "<span class='v'>enough ✓</span>" : `<button data-l="${r.m.label}">Record more</button>`}</div></div>`).join("");
+  $("#check").classList.add("on");
+  $("#ck-x").onclick = () => $("#check").classList.remove("on");
+  $("#check").querySelectorAll("button[data-l]").forEach(b => b.onclick = async () => {
+    if (busy) return; $("#check").classList.remove("on"); busy = true; abort = false;
+    const m = MOVES.find(x => x.label === b.dataset.l);
+    await segment(m, "train", 10 + Math.floor(Math.random() * 1000), 1);   // its own round number
+    await fetch("/api/move/rec", { method: "POST", body: JSON.stringify({ on: false }) });
+    $("#overlay").classList.remove("on"); busy = false; setTimeout(trainingCheck, 1200);
+  });
+}
+$("#checkbtn").onclick = trainingCheck;
+async function run(session, rounds) {
+  if (busy) return; busy = true; abort = false; tally = {}; $("#summary").classList.remove("on");
+  outer: for (let rnd = 1; rnd <= rounds; rnd++) for (const m of MOVES) if (!await segment(m, session, rnd, rounds)) break outer;
+  await fetch("/api/move/rec", { method: "POST", body: JSON.stringify({ on: false }) });
+  $("#overlay").classList.remove("on"); $("#banner").classList.remove("on"); busy = false;
+  if (session === "test" && !abort) summary();
+  if (session === "train") setTimeout(trainingCheck, 1200);
+}
+$("#rec-train").onclick = () => run("train", 3);
+$("#rec-test").onclick = () => run("test", 1);
+$("#clear").onclick = () => { if (!busy) fetch("/api/move/clear", { method: "POST", body: "{}" }); };
+$("#cover").onclick = () => { const on = $("#cam").classList.toggle("covered"); $("#cover").classList.toggle("on", on); $("#cover").textContent = on ? "Show camera" : "Cover camera"; };
+addEventListener("keydown", e => { if (e.key === "Escape") abort = true; });
+
+/* ---------- live WiFi answer ---------- */
+let recInfo = null;   // server-side counters for the segment being recorded
+let multiSince = 0;   // when the server started hearing from more than one movement page
+const es = new EventSource("/stream");
+es.onmessage = ev => {
+  const d = JSON.parse(ev.data), m = d.move, e = d.move_est;
+  recInfo = m.recording; lastCounts = m.counts || {};
+  // a second page only counts if it keeps sending for > 4 s (a refresh leaves the old page "alive" ~2 s)
+  if (d.cam.tabs > 1) { multiSince = multiSince || Date.now(); } else multiSince = 0;
+  const warn = multiSince && Date.now() - multiSince > 4000 ? "Another movement page is open and sending camera labels — close the other tab, or recordings won't be saved."
+    : (busy && Object.values(d.links || {}).filter(l => l.pps >= 3).length < 3 ? "Fewer than 3 WiFi links are streaming — check that the boards are powered." : "");
+  $("#warn").textContent = warn; $("#warn").classList.toggle("on", !!warn);
+  const nLabels = Object.keys((m.counts && m.counts.train) || {}).length;
+  const t = m.test;
+  $("#score").innerHTML = !m.trained ? "" :
+    (t ? `test session: <b>${Math.round(100 * t.acc)}%</b> of ${t.n} windows · chance ${Math.round(100 / Math.max(2, nLabels))}%` : "record a test session for the honest score")
+    + (m.lor != null ? `<br>across training rounds: ${Math.round(100 * m.lor)}%` : "") + `<br>${(m.ids || []).length} WiFi links`;
+  const fmt = c => Object.entries(c || {}).map(([l, n]) => `${NAME[l] || l} ${n}`).join(" · ");
+  $("#counts").textContent = m.counts && Object.keys(m.counts).length ? `windows — training: ${fmt(m.counts.train) || "none"}   |   test: ${fmt(m.counts.test) || "none"}` : "";
+  if (!m.trained || !e || !e.probs) {
+    $("#ans").textContent = "–"; $("#ans").className = "unsure"; $("#ans-s").textContent = !m.trained ? "not trained yet — record a training session" : (e && e.status) || "";
+    $("#agree").textContent = ""; return;
+  }
+  const sure = e.status === "ok";
+  wifiBest = sure ? e.best : null;
+  $("#ans").textContent = sure ? NAME[e.best] || e.best : "Not sure"; $("#ans").className = sure ? "" : "unsure";
+  $("#ans-s").textContent = `${Math.round(100 * e.confidence)}%${sure ? "" : " · maybe " + (NAME[e.best] || e.best)} · last 3 s`;
+  document.querySelectorAll(".row").forEach(row => {
+    const p = (e.probs || {})[row.dataset.l] || 0; row.style.display = row.dataset.l in e.probs ? "" : "none";
+    row.querySelector(".f").style.width = (100 * p) + "%"; row.querySelector(".v").textContent = Math.round(100 * p) + "%"; row.classList.toggle("top", row.dataset.l === e.best);
+  });
+  $("#agree").innerHTML = e.agree != null ? `WiFi agrees with the camera <b>${Math.round(100 * e.agree)}%</b> of the last minute` : "";
+};
+</script>
+</body>
+</html>

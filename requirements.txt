@@ -1,0 +1,5 @@
+numpy>=1.26
+pyyaml>=6.0
+pyserial>=3.5
+esptool>=4.8
+esp-idf-nvs-partition-gen>=0.1   # used by RuView's provision.py to write the WiFi/node settings

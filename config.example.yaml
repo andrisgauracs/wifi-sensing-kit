@@ -1,0 +1,36 @@
+# wifi-sensing-kit configuration. Copy to config.yaml and fill in.
+# config.yaml is gitignored — it holds your network details.
+
+wifi:
+  ssid: "YourNetwork"                 # must be a 2.4 GHz network (ESP32-S3 has no 5 GHz)
+  password_file: "~/.wifi-sensing-pass"   # plain text file containing only the password (chmod 600)
+
+host:
+  ip: auto                            # this computer's IP on that network; "auto" = detect it
+  udp_port: 5005                      # boards stream CSI here
+  http_port: 8932                     # dashboards: http://127.0.0.1:8932
+
+# Your router's MAC address as the boards see it (the BSSID). Run `python firmware/discover.py --router`
+# after the boards have been flashed once, or copy it from your router's admin page.
+router_bssid: "aa:bb:cc:dd:ee:ff"
+
+# One entry per board. `python firmware/discover.py` lists the MACs of the boards plugged in.
+# Colours are shown on the board's LED and in the dashboards.
+boards:
+  - { id: 1, mac: "11:22:33:44:55:01", colour: red }
+  - { id: 2, mac: "11:22:33:44:55:02", colour: green }
+  - { id: 3, mac: "11:22:33:44:55:03", colour: blue }
+
+firmware:
+  idf_path: "~/esp/esp-idf"           # ESP-IDF v5.4 or v5.5
+  flash_size: 8MB                     # the build fits any S3 with >= 8 MB flash (16 MB boards are fine)
+  devkitc: true                       # display-less boards like ESP32-S3-DevKitC-1 (see docs/troubleshooting.md)
+
+# Optional: a floor plan for the room map. Without it the map draws a plain grid of the given size.
+room:
+  width_m: 4.0                        # across
+  length_m: 6.0                       # along
+  # plan:
+  #   image: "my-floorplan.png"       # put it in data/
+  #   origin_px: [120, 80]            # pixel of the room's top-left corner (X = 0, Y = 0)
+  #   px_per_m: [90, 75]               # pixels per metre across (x) and along (y) — plans are often not square

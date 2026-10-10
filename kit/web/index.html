@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Live</title>
+<style>
+/* Same visual system as the main app: cyan = WiFi, amber = warning/stale, grey = neutral.
+   Stage authored at 1920x1080 and scaled to the window. */
+@font-face { font-family: "Inter"; src: url(assets/fonts/inter-500.woff2) format("woff2"); font-weight: 500; }
+@font-face { font-family: "Inter"; src: url(assets/fonts/inter-700.woff2) format("woff2"); font-weight: 700; }
+@font-face { font-family: "JetBrains Mono"; src: url(assets/fonts/jbmono-400.woff2) format("woff2"); font-weight: 400; }
+@font-face { font-family: "JetBrains Mono"; src: url(assets/fonts/jbmono-600.woff2) format("woff2"); font-weight: 600; }
+:root { --ground:#0b0e19; --panel:rgba(18,23,40,.78); --line:rgba(160,175,210,.16); --ink:#eef1f8; --ink-2:#9aa3b8; --ink-3:#5d6680; --wifi:#38e1ff; --test:#ffb547; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { width:100%; height:100%; background:var(--ground); color:var(--ink); font-family:"Inter",sans-serif; overflow-x:hidden; overflow-y:auto; -webkit-font-smoothing:antialiased; }
+/* fit the window width; if the window is shorter than the layout, the page scrolls */
+body { height:auto; min-height:100%; overflow:visible; }   /* the page (html) scrolls, not an inner box */
+#viewport { position:relative; width:100%; overflow:hidden; }
+#stage { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.bg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.title { position:absolute; left:120px; top:110px; font-size:68px; font-weight:700; letter-spacing:-.03em; }
+.acc { color:var(--wifi); }
+.status { position:absolute; right:120px; top:136px; font-family:"JetBrains Mono"; font-size:24px; color:var(--ink-2); }
+#nodes { position:absolute; left:120px; top:250px; width:1680px; display:grid; grid-template-columns:repeat(3,1fr); gap:30px; }
+/* Node colours match each board's LED (firmware: node 1 red, 2 green, 3 blue). Their only job is identity. */
+.node { --node:#9aa3b8; background:var(--panel); border:1px solid var(--line); border-top:5px solid var(--node); border-radius:20px; padding:22px 26px 24px; }
+.node-h { display:flex; align-items:center; gap:14px; font-size:28px; font-weight:700; }
+.dot { width:18px; height:18px; border-radius:9px; border:3px solid var(--node); background:transparent; }
+.dot.live { background:var(--node); box-shadow:0 0 14px var(--node); }
+.cname { font-size:20px; font-weight:500; color:var(--node); }
+.stale-tag { font-size:18px; font-weight:500; color:var(--test); display:none; }
+.node.is-stale .stale-tag { display:inline; }
+.ip { margin-left:auto; font-family:"JetBrains Mono"; font-size:20px; color:var(--ink-3); font-weight:400; }
+.node canvas { display:block; margin-top:18px; border-radius:10px; }
+.stats { display:grid; grid-template-columns:repeat(3,1fr); margin-top:18px; }
+.stat b { display:block; font-family:"JetBrains Mono"; font-weight:600; font-size:34px; }
+.stat span { font-size:18px; color:var(--ink-2); }
+.pres { margin-top:14px; font-size:18px; color:var(--ink-3); font-family:"JetBrains Mono"; }
+.pres.on { color:var(--wifi); }
+#room { position:absolute; left:120px; top:820px; width:1680px; height:150px; background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:22px 30px; display:flex; gap:40px; align-items:center; }
+#room .big b { display:block; font-family:"JetBrains Mono"; font-weight:600; font-size:64px; color:var(--wifi); line-height:1; }
+#room .big span { font-size:20px; color:var(--ink-2); }
+#hint { position:fixed; right:14px; bottom:10px; font-size:12px; color:var(--ink-3); }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+  <img class="bg" src="assets/bg-16x9.png" alt="">
+  <div class="title">My WiFi, <span class="acc">live</span></div>
+  <div class="status" id="status">waiting for nodes…</div>
+  <div id="nodes"></div>
+  <div id="room">
+    <div class="big" style="width:300px"><b id="room-motion">–</b><span>Motion in the room</span></div>
+    <canvas id="room-chart"></canvas>
+  </div>
+</div></div>
+<div id="hint"><a href="/room.html" style="color:#9aa3b8">room map</a> · <a href="/movement.html" style="color:#9aa3b8">movement</a> · V: raw / change view · F: fullscreen</div>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+// board colours come from config.yaml (they match each board's LED)
+const HEX = { red: "#ff5a5a", green: "#4ade80", blue: "#5b8cff", yellow: "#f5d547", magenta: "#e879f9", cyan: "#38e1ff", white: "#eef1f8" };
+const NODE_COLOURS = {};
+fetch("/api/config").then(r => r.json()).then(c => c.boards.forEach(b => { NODE_COLOURS[b.id] = [HEX[b.colour] || HEX.white, b.colour]; }));
+const N_SC = 52, WIN = 500, HEAT_W = 486, HEAT_H = 300;
+let view = "change";             // "change" = deviation from each band's recent average (movement pops); "raw" = amplitude
+const nodes = {};                 // id -> {frames:[], el, canvas, motion:[]}
+const roomHist = [];
+let scale = 1;
+
+function fit() { scale = document.documentElement.clientWidth / 1920; $("#stage").style.transform = `scale(${scale})`; $("#viewport").style.height = 1080 * scale + "px"; Object.values(nodes).forEach(n => size(n.canvas)); size($("#room-chart")); }
+function size(c) { const k = Math.max(1, devicePixelRatio * scale); c.width = c.cssW * k; c.height = c.cssH * k; c.getContext("2d").setTransform(k, 0, 0, k, 0, 0); }
+function mk(c, w, h) { c.cssW = w; c.cssH = h; c.style.width = w + "px"; c.style.height = h + "px"; size(c); return c; }
+mk($("#room-chart"), 1300, 106);
+
+const LUT = (() => { const st = [[0,[11,14,25]],[.35,[16,52,92]],[.65,[31,150,196]],[.85,[56,225,255]],[1,[236,252,255]]]; const o = [];
+  for (let i = 0; i < 256; i++) { const v = i / 255; let k = 0; while (k < st.length - 2 && v > st[k + 1][0]) k++; const [a, ca] = st[k], [b, cb] = st[k + 1], t = (v - a) / (b - a); o.push(`rgb(${ca.map((c, j) => Math.round(c + (cb[j] - c) * t)).join(",")})`); } return o; })();
+
+function nodeEl(id) {
+  const el = document.createElement("div"); el.className = "node";
+  const c = NODE_COLOURS[id] || ["#9aa3b8", "grey"]; el.style.setProperty("--node", c[0]);
+  el.innerHTML = `<div class="node-h"><div class="dot"></div>Node ${id}<span class="cname">${c[1]}</span><span class="stale-tag">no data</span><span class="ip"></span></div>
+    <canvas></canvas>
+    <div class="stats"><div class="stat"><b class="pps">–</b><span>Packets / s</span></div><div class="stat"><b class="rssi">–</b><span>Signal (dBm)</span></div><div class="stat"><b class="loss">–</b><span>From router</span></div></div>
+    <div class="pres">board: –</div>`;
+  const ids = Object.keys(nodes).map(Number).concat(id).sort((a, b) => a - b);
+  $("#nodes").insertBefore(el, $("#nodes").children[ids.indexOf(id)] || null);
+  return { frames: [], el, canvas: mk(el.querySelector("canvas"), HEAT_W, HEAT_H) };
+}
+
+function drawHeat(n) {
+  const ctx = n.canvas.getContext("2d"), F = n.frames; ctx.fillStyle = "#0b0e19"; ctx.fillRect(0, 0, HEAT_W, HEAT_H);
+  if (F.length < 2) return;
+  // per-band mean over the window (for the "change" view) and a global max (for "raw")
+  const mean = new Float32Array(N_SC); let mx = 1;
+  for (const f of F) for (let k = 0; k < N_SC; k++) { mean[k] += f[k]; if (f[k] > mx) mx = f[k]; }
+  for (let k = 0; k < N_SC; k++) mean[k] /= F.length;
+  const cw = HEAT_W / WIN, rh = HEAT_H / N_SC, x0 = HEAT_W - F.length * cw;
+  for (let i = 0; i < F.length; i++) for (let k = 0; k < N_SC; k++) {
+    const v = view === "raw" ? F[i][k] / mx : 0.5 + (F[i][k] - mean[k]) / (2 * Math.max(4, mean[k] * 0.5));
+    ctx.fillStyle = LUT[Math.max(0, Math.min(255, Math.round(v * 255)))];
+    ctx.fillRect(x0 + i * cw, HEAT_H - (k + 1) * rh, Math.ceil(cw), Math.ceil(rh));
+  }
+}
+
+function drawRoom() {
+  const c = $("#room-chart"), ctx = c.getContext("2d"), W = c.cssW, H = c.cssH; ctx.clearRect(0, 0, W, H);
+  const mx = Math.max(0.15, ...roomHist);
+  ctx.strokeStyle = "rgba(160,175,210,.16)"; ctx.beginPath(); ctx.moveTo(0, H - 1); ctx.lineTo(W, H - 1); ctx.stroke();
+  ctx.strokeStyle = "#38e1ff"; ctx.lineWidth = 3; ctx.beginPath();
+  roomHist.forEach((v, i) => { const x = W - (roomHist.length - 1 - i) * (W / 449), y = H - 4 - (v / mx) * (H - 12); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+}
+
+const es = new EventSource("/stream");
+es.onmessage = ev => {
+  const msg = JSON.parse(ev.data); let live = 0, motions = [];
+  for (const [ids, d] of Object.entries(msg.nodes)) {
+    const id = +ids; const n = nodes[id] || (nodes[id] = nodeEl(id));
+    for (const f of d.frames) n.frames.push(f); if (n.frames.length > WIN) n.frames.splice(0, n.frames.length - WIN);
+    const ok = d.age != null && d.age < 1.5; live += ok;
+    n.el.querySelector(".dot").className = "dot" + (ok ? " live" : ""); n.el.classList.toggle("is-stale", !ok);
+    n.el.querySelector(".ip").textContent = d.ip || "";
+    n.el.querySelector(".pps").textContent = d.pps.toFixed(0);
+    n.el.querySelector(".rssi").textContent = d.rssi ?? "–";
+    n.el.querySelector(".loss").textContent = (100 * d.used).toFixed(0) + "%";
+    const v = d.vitals || {}; const p = n.el.querySelector(".pres");
+    p.className = "pres" + (v.presence ? " on" : "");
+    p.textContent = v.t ? `board: ${v.presence ? "someone here" : "empty"} · motion ${v.motion_energy.toFixed(2)}${v.presence && v.breathing_bpm ? ` · breathing ${v.breathing_bpm.toFixed(0)}/min` : ""}` : "board: –";
+    if (ok) motions.push(d.motion);
+    drawHeat(n);
+  }
+  const m = motions.length ? motions.reduce((a, b) => a + b, 0) / motions.length : 0;
+  roomHist.push(m); if (roomHist.length > 450) roomHist.shift();
+  $("#room-motion").textContent = m.toFixed(2); drawRoom();
+  const n = Object.keys(msg.nodes).length;
+  $("#status").textContent = n ? `${live} of ${n} nodes live · ${(msg.nodes[Object.keys(msg.nodes)[0]].freq || 0)} MHz` : "waiting for nodes…";
+};
+addEventListener("resize", fit);
+addEventListener("keydown", e => { if (e.key === "v" || e.key === "V") view = view === "raw" ? "change" : "raw"; if (e.key === "f" || e.key === "F") document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen(); });
+fit();
+</script>
+</body>
+</html>

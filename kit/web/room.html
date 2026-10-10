@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WiFi Room Map</title>
+<style>
+/* Same system as index.html. Node colours = identity (match the LEDs); cyan = the estimate of you;
+   amber = calibration in progress. Stage 1920x1080, scaled. */
+@font-face { font-family: "Inter"; src: url(assets/fonts/inter-500.woff2) format("woff2"); font-weight: 500; }
+@font-face { font-family: "Inter"; src: url(assets/fonts/inter-700.woff2) format("woff2"); font-weight: 700; }
+@font-face { font-family: "JetBrains Mono"; src: url(assets/fonts/jbmono-400.woff2) format("woff2"); font-weight: 400; }
+@font-face { font-family: "JetBrains Mono"; src: url(assets/fonts/jbmono-600.woff2) format("woff2"); font-weight: 600; }
+:root { --ground:#0b0e19; --panel:rgba(18,23,40,.82); --line:rgba(160,175,210,.16); --ink:#eef1f8; --ink-2:#9aa3b8; --ink-3:#5d6680; --wifi:#38e1ff; --test:#ffb547; }
+* { box-sizing:border-box; margin:0; padding:0; }
+html,body { width:100%; height:100%; background:var(--ground); color:var(--ink); font-family:"Inter",sans-serif; overflow-x:hidden; overflow-y:auto; -webkit-font-smoothing:antialiased; }
+button { font:inherit; color:inherit; cursor:pointer; }
+/* fit the window width; if the window is shorter than the layout, the page scrolls */
+body { height:auto; min-height:100%; overflow:visible; }   /* the page (html) scrolls, not an inner box */
+#viewport { position:relative; width:100%; overflow:hidden; }
+#stage { position:absolute; left:0; top:0; width:1920px; height:1080px; transform-origin:0 0; }
+.bg { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.title { position:absolute; left:120px; top:84px; font-size:60px; font-weight:700; letter-spacing:-.03em; }
+.acc { color:var(--wifi); }
+#where { position:absolute; right:120px; top:92px; text-align:right; }
+#where b { display:block; font-size:44px; font-weight:700; color:var(--wifi); letter-spacing:-.02em; }
+#where span { font-family:"JetBrains Mono"; font-size:20px; color:var(--ink-2); }
+#plan { position:absolute; left:120px; top:200px; border-radius:20px; background:var(--panel); border:1px solid var(--line); }
+#panel { position:absolute; left:120px; top:930px; width:1680px; height:110px; display:flex; gap:14px; align-items:center; }
+.tab { padding:12px 22px; border-radius:12px; background:#151a2c; border:1px solid var(--line); font-size:22px; font-weight:500; }
+.tab.on { border-color:var(--wifi); color:var(--wifi); }
+.btn { padding:12px 20px; border-radius:12px; background:#151a2c; border:1px solid var(--line); font-size:20px; }
+.btn.rec { border-color:var(--test); color:var(--test); }
+.btn.done { border-color:rgba(56,225,255,.4); }
+.btn small { font-family:"JetBrains Mono"; font-size:15px; color:var(--ink-3); margin-left:8px; }
+#spots { display:flex; gap:10px; overflow-x:auto; flex:1; padding-bottom:4px; }
+#hint { font-size:19px; color:var(--ink-2); }
+#acc { font-family:"JetBrains Mono"; font-size:18px; color:var(--ink-2); white-space:nowrap; }
+#overlay { position:absolute; inset:0; display:none; place-items:center; background:rgba(8,10,18,.6); }
+#overlay.on { display:grid; }
+#overlay div { text-align:center; }
+#overlay b { display:block; font-size:120px; font-family:"JetBrains Mono"; color:var(--test); }
+#overlay span { font-size:34px; font-weight:500; }
+#nav { position:fixed; left:14px; bottom:10px; font-size:13px; color:var(--ink-3); }
+#nav a { color:var(--ink-2); }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage">
+  <img class="bg" src="assets/bg-16x9.png" alt="">
+  <div class="title">Where am <span class="acc">I</span>?</div>
+  <div id="where"><b id="where-b">–</b><span id="where-s">not calibrated yet</span></div>
+  <canvas id="plan"></canvas>
+  <div id="panel">
+    <button class="tab" data-mode="live">Live</button>
+    <button class="tab" data-mode="place">Place boards</button>
+    <button class="tab" data-mode="calib">Calibrate</button>
+    <div id="spots"></div>
+    <div id="hint"></div>
+    <div id="acc"></div>
+  </div>
+  <div id="overlay"><div><b id="ov-n">15</b><span id="ov-t"></span></div></div>
+</div></div>
+<div id="nav"><a href="/">signals</a> · room map · <a href="/movement.html">movement</a></div>
+<script>
+"use strict";
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+// Geometry comes from config.yaml (room: width_m, length_m, optional plan). Everything works in
+// metres: X across the room, Y along it. Points are stored as plan pixels {u, v}; without a plan
+// image the "plan" is a virtual 100 px/m grid. The long side runs left-right on screen.
+const HEX = { red: "#ff5a5a", green: "#4ade80", blue: "#5b8cff", yellow: "#f5d547", magenta: "#e879f9", cyan: "#38e1ff", white: "#eef1f8" };
+let NODE_COLOURS = {};
+let U0 = 0, V0 = 0, PXM_U = 100, PXM_V = 100, ROOM = { width_m: 4, length_m: 6 }, PLAN = null;
+const toM = p => ({ X: (p.u - U0) / PXM_U, Y: (p.v - V0) / PXM_V });
+const fromM = m => ({ u: U0 + m.X * PXM_U, v: V0 + m.Y * PXM_V });
+let VIEW, S, OX, OY, DEFAULT_LAYOUT, SUGGESTED;
+const PW = 1680, PH = 700;                                   // plan canvas, stage px
+const toS = p => { const m = toM(p); return [OX + (VIEW.Y1 - m.Y) * S, OY + (m.X - VIEW.X0) * S]; };
+const fromS = (x, y) => fromM({ X: VIEW.X0 + (y - OY) / S, Y: VIEW.Y1 - (x - OX) / S });
+
+function setupGeometry(cfg) {
+  ROOM = { width_m: 4, length_m: 6, ...(cfg.room || {}) }; PLAN = ROOM.plan || null;
+  if (PLAN) { [U0, V0] = PLAN.origin_px; [PXM_U, PXM_V] = PLAN.px_per_m; }
+  for (const b of cfg.boards) NODE_COLOURS[b.id] = HEX[b.colour] || HEX.white;
+  const W = ROOM.width_m, L = ROOM.length_m;
+  VIEW = { X0: -0.3, X1: W + 0.3, Y0: -0.3, Y1: L + 0.3 };
+  S = Math.min(PW / (VIEW.Y1 - VIEW.Y0), PH / (VIEW.X1 - VIEW.X0));
+  OX = (PW - (VIEW.Y1 - VIEW.Y0) * S) / 2; OY = (PH - (VIEW.X1 - VIEW.X0) * S) / 2;
+  // starting positions until you drag them: router in a corner, boards spread around the far walls
+  const ids = cfg.boards.map(b => b.id), spots = [[0.15, 0.55], [0.5, 0.95], [0.85, 0.55], [0.15, 0.95], [0.85, 0.95], [0.5, 0.5]];
+  DEFAULT_LAYOUT = { router: fromM({ X: W * 0.9, Y: L * 0.05 }),
+    nodes: Object.fromEntries(ids.map((id, i) => [id, fromM({ X: W * spots[i % spots.length][0], Y: L * spots[i % spots.length][1] })])) };
+  // suggested calibration spots: a 2 x 3 grid in the open floor, ~1 m from the walls
+  SUGGESTED = [];
+  for (const [j, y] of [0.25, 0.5, 0.75].entries()) for (const [i, x] of [0.3, 0.7].entries())
+    SUGGESTED.push({ name: `Spot ${"ABCDEF"[j * 2 + i]}`, X: W * x, Y: L * y });
+}
+
+let layout = null;
+let mode = "live", last = null, drag = null, pendingSpots = [], recording = null, scale = 1;
+const plan = new Image();
+const motionBase = {}, motionNow = {};
+const est = { x: null, y: null, show: 0 };
+
+function fit() { scale = document.documentElement.clientWidth / 1920; $("#stage").style.transform = `scale(${scale})`; $("#viewport").style.height = 1080 * scale + "px"; size(); }
+function size() { const c = $("#plan"), k = Math.max(1, devicePixelRatio * scale); c.style.width = PW + "px"; c.style.height = PH + "px"; c.width = PW * k; c.height = PH * k; c.getContext("2d").setTransform(k, 0, 0, k, 0, 0); }
+
+
+const saveLayout = () => fetch("/api/layout", { method: "POST", body: JSON.stringify(layout) });
+
+function setMode(m) {
+  mode = m; $$(".tab").forEach(t => t.classList.toggle("on", t.dataset.mode === m));
+  $("#hint").textContent = m === "place" ? "Drag the router and boards to where they really are." :
+    m === "calib" ? "Add spots (or click the map), then run the guided calibration. Esc stops it." : "";
+  renderSpots();
+}
+$$(".tab").forEach(t => t.onclick = () => setMode(t.dataset.mode));
+
+/* ---------- calibration UI ---------- */
+const ROUNDS = 3, SPOT_SECS = 12, EMPTY_SECS = 20;
+let abortGuided = false;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function allSpots() { const c = (last && last.calib) || { spots: {} }; const a = { ...c.spots }; pendingSpots.forEach(s => a[s.label] = s); return a; }
+function renderSpots() {
+  const box = $("#spots"); box.innerHTML = "";
+  if (mode !== "calib") return;
+  const c = (last && last.calib) || { spots: {}, counts: {} };
+  const mk = (html, cls, fn) => { const b = document.createElement("button"); b.className = "btn " + cls; b.innerHTML = html; b.onclick = fn; box.appendChild(b); return b; };
+  const spots = allSpots();
+  const hasData = Object.keys(c.counts || {}).length > 0;
+  mk("Use suggested spots", "", () => {
+    if (hasData) { $("#hint").textContent = "Clear all first — suggested spots replace the current ones."; return; }
+    pendingSpots = SUGGESTED.map((p, i) => { const q = fromM({ X: p.X, Y: p.Y }); return { label: "s" + i + Date.now().toString(36), name: p.name, x: q.u, y: q.v }; }); renderSpots();
+  });
+  if (Object.keys(spots).length) mk(`Guided calibration<small>${ROUNDS} rounds · ~${Math.round(ROUNDS * (EMPTY_SECS + 10 + Object.keys(spots).length * (SPOT_SECS + 6)) / 60)} min</small>`, "rec", () => guided());
+  const btn = (label, text, spot) => { const n = c.counts[label] || 0; mk(`${text}<small>${n ? n + " windows" : "record"}</small>`, (n ? "done" : "") + (recording === label ? " rec" : ""), () => record(label, spot, {})); };
+  btn("empty", "Empty room", null);
+  Object.entries(spots).forEach(([l, sp]) => btn(l, sp.name || l, sp));
+  if (Object.keys(c.counts).length || pendingSpots.length) mk("Clear all", "", () => { fetch("/api/calib/clear", { method: "POST", body: "{}" }); pendingSpots = []; renderSpots(); });
+}
+async function record(label, spot, { secs, lead, rnd = 0, prefix = "" } = {}) {
+  if (recording && !prefix) return;
+  const empty = label === "empty"; recording = label; renderSpots();
+  const ov = $("#overlay"); ov.classList.add("on");
+  lead = lead ?? (empty ? 10 : 5); secs = secs ?? (empty ? 30 : 15);
+  for (let i = lead; i > 0 && !abortGuided; i--) { $("#ov-n").textContent = i; $("#ov-t").textContent = prefix + (empty ? "Leave the room" : `Go to ${spot.name}`); await sleep(1000); }
+  if (abortGuided) { ov.classList.remove("on"); recording = null; return false; }
+  const r = await fetch("/api/calib/record", { method: "POST", body: JSON.stringify({ label, seconds: secs, spot, round: rnd }) }).then(r => r.json());
+  if (!r.ok) { $("#ov-t").textContent = r.error; await sleep(3000); ov.classList.remove("on"); recording = null; return false; }
+  for (let i = secs; i > 0 && !abortGuided; i--) { $("#ov-n").textContent = i; $("#ov-t").textContent = prefix + (empty ? "Recording the empty room" : `Recording · ${spot.name} · move naturally on the spot`); await sleep(1000); }
+  ov.classList.remove("on"); recording = null; pendingSpots = pendingSpots.filter(s => s.label !== label); renderSpots();
+  return true;
+}
+// every spot (and the empty room) once per round, so each is learned at several different moments
+async function guided() {
+  if (recording) return;
+  const spots = Object.entries(allSpots()); abortGuided = false;
+  for (let rnd = 1; rnd <= ROUNDS && !abortGuided; rnd++) {
+    if (!await record("empty", null, { secs: EMPTY_SECS, lead: 10, rnd, prefix: `Round ${rnd}/${ROUNDS} · ` })) break;
+    for (const [l, sp] of spots) if (!await record(l, sp, { secs: SPOT_SECS, lead: 6, rnd, prefix: `Round ${rnd}/${ROUNDS} · ` })) break;
+  }
+}
+addEventListener("keydown", e => { if (e.key === "Escape") abortGuided = true; });
+
+/* ---------- pointer ---------- */
+function stagePoint(e) { const r = $("#plan").getBoundingClientRect(); return [(e.clientX - r.left) / scale, (e.clientY - r.top) / scale]; }
+$("#plan").addEventListener("pointerdown", e => {
+  const [x, y] = stagePoint(e);
+  if (mode === "place") {
+    const items = [["router", layout.router], ...Object.entries(layout.nodes)];
+    for (const [k, p] of items) { const [sx, sy] = toS(p); if (Math.hypot(sx - x, sy - y) < 30) { drag = p; return; } }
+  } else if (mode === "calib" && !recording) {
+    const p = fromS(x, y), n = Object.keys((last && last.calib.spots) || {}).length + pendingSpots.length + 1;
+    pendingSpots.push({ label: "spot" + Date.now().toString(36), name: "Spot " + n, x: p.u, y: p.v }); renderSpots();
+  }
+});
+addEventListener("pointermove", e => { if (!drag) return; const [x, y] = stagePoint(e); Object.assign(drag, fromS(x, y)); });
+addEventListener("pointerup", () => { if (drag) { drag = null; saveLayout(); } });
+
+/* ---------- drawing ---------- */
+function draw(now) {
+  const ctx = $("#plan").getContext("2d"); ctx.clearRect(0, 0, PW, PH);
+  if (PLAN && plan.complete && plan.naturalWidth) {
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); const k = $("#plan").width / PW; ctx.scale(k, k);
+    // (u,v) plan px -> stage px: x = OX + (Y1 - (v-V0)/PXM_V)*S,  y = OY + ((u-U0)/PXM_U - X0)*S
+    ctx.transform(0, S / PXM_U, -S / PXM_V, 0, OX + (VIEW.Y1 + V0 / PXM_V) * S, OY - (U0 / PXM_U + VIEW.X0) * S);
+    ctx.fillStyle = "#0e1222"; ctx.fillRect(0, 0, plan.naturalWidth, plan.naturalHeight);
+    ctx.filter = "invert(1) brightness(.8)"; ctx.globalAlpha = .6;
+    ctx.drawImage(plan, 0, 0); ctx.restore();
+  } else {   // no plan: 1 m grid inside the room outline
+    const [x0, y0] = toS(fromM({ X: 0, Y: ROOM.length_m })), [x1, y1] = toS(fromM({ X: ROOM.width_m, Y: 0 }));
+    ctx.strokeStyle = "rgba(160,175,210,.08)"; ctx.lineWidth = 1;
+    for (let m = 1; m < ROOM.length_m; m++) { const [x] = toS(fromM({ X: 0, Y: m })); ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); }
+    for (let m = 1; m < ROOM.width_m; m++) { const [, y] = toS(fromM({ X: m, Y: 0 })); ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); }
+    ctx.strokeStyle = "rgba(160,175,210,.4)"; ctx.lineWidth = 3; ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+  }
+  // sensing lines: router -> board (board colour) and board <-> board (blend of both colours).
+  // Brightness/width = how disturbed that path is right now; both directions of a board pair
+  // are drawn as one line using the stronger of the two.
+  const pos = id => id === "R" ? layout.router : layout.nodes[id];
+  const colourOf = id => id === "R" ? "#eef1f8" : NODE_COLOURS[id];
+  const pairs = {};
+  for (const k of Object.keys(motionNow)) {
+    const [a, b] = k.split(">"); if (!pos(a) || !pos(b)) continue;
+    const key = a === "R" || b === "R" ? (a === "R" ? `R-${b}` : `R-${a}`) : [a, b].sort().join("-");
+    pairs[key] = Math.max(pairs[key] || 0, motionNow[k]);
+  }
+  for (const [key, m] of Object.entries(pairs)) {
+    const [a, b] = key.split("-"), A = toS(pos(a)), B = toS(pos(b));
+    const toBoard = a === "R";
+    let stroke = colourOf(b);
+    if (!toBoard) { stroke = ctx.createLinearGradient(...A, ...B); stroke.addColorStop(0, colourOf(a)); stroke.addColorStop(1, colourOf(b)); }
+    ctx.save(); ctx.strokeStyle = stroke; ctx.lineCap = "round";
+    ctx.globalAlpha = .22 + .78 * m; ctx.lineWidth = 3 + 9 * m; ctx.shadowColor = toBoard ? colourOf(b) : "#eef1f8"; ctx.shadowBlur = 24 * m;
+    if (!toBoard) ctx.setLineDash([2, 9]);
+    ctx.beginPath(); ctx.moveTo(...A); ctx.lineTo(...B); ctx.stroke(); ctx.setLineDash([]);
+    // packets travelling along the line (evenly phased)
+    ctx.globalAlpha = .85; ctx.shadowBlur = 0; ctx.fillStyle = toBoard ? colourOf(b) : "#eef1f8";
+    for (let i = 0; i < 3; i++) { const f = ((now / 1600) - i / 3) % 1, g = (f + 1) % 1; ctx.beginPath(); ctx.arc(A[0] + (B[0] - A[0]) * g, A[1] + (B[1] - A[1]) * g, toBoard ? 4 : 3, 0, 7); ctx.fill(); }
+    ctx.restore();
+  }
+  // calibration spots
+  const spots = { ...((last && last.calib && last.calib.spots) || {}) }; pendingSpots.forEach(s => spots[s.label] = s);
+  for (const [l, s] of Object.entries(spots)) {
+    const [x, y] = toS({ u: s.x, v: s.y }), active = recording === l;
+    ctx.strokeStyle = active ? "#ffb547" : "rgba(238,241,248,.55)"; ctx.lineWidth = 2; ctx.setLineDash([5, 6]);
+    ctx.beginPath(); ctx.arc(x, y, 22, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = active ? "#ffb547" : "#9aa3b8"; ctx.font = "500 16px Inter"; ctx.textAlign = "center"; ctx.fillText(s.name || l, x, y + 42);
+  }
+  // you
+  if (est.show > 0.01 && est.x != null) {
+    ctx.save(); ctx.globalAlpha = est.show;
+    const g = ctx.createRadialGradient(est.x, est.y, 0, est.x, est.y, 90); g.addColorStop(0, "rgba(56,225,255,.55)"); g.addColorStop(1, "rgba(56,225,255,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(est.x, est.y, 90, 0, 7); ctx.fill();
+    ctx.fillStyle = "#38e1ff"; ctx.shadowColor = "#38e1ff"; ctx.shadowBlur = 20; ctx.beginPath(); ctx.arc(est.x, est.y, 13, 0, 7); ctx.fill(); ctx.restore();
+  }
+  // router + boards on top
+  const marker = (p, c, label, square) => {
+    const [x, y] = toS(p); ctx.save(); ctx.fillStyle = "#0b0e19"; ctx.strokeStyle = c; ctx.lineWidth = 4;
+    ctx.beginPath(); square ? ctx.roundRect(x - 17, y - 17, 34, 34, 8) : ctx.arc(x, y, 16, 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = c; ctx.font = "700 17px Inter"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(label, x, y + 1); ctx.restore();
+    if (mode === "place") { ctx.strokeStyle = "rgba(238,241,248,.35)"; ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.arc(x, y, 28, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
+  };
+  marker(layout.router, "#eef1f8", "R", true);
+  for (const [id, p] of Object.entries(layout.nodes)) marker(p, NODE_COLOURS[id], id, false);
+  // scale bar: 1 m
+  ctx.strokeStyle = "#5d6680"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(PW - 40 - S, PH - 26); ctx.lineTo(PW - 40, PH - 26); ctx.stroke();
+  ctx.fillStyle = "#5d6680"; ctx.font = "400 15px 'JetBrains Mono'"; ctx.textAlign = "right"; ctx.fillText("1 m", PW - 40, PH - 34);
+}
+
+function loop(now) {
+  // ease the estimate toward its target
+  if (est.tx != null) { est.x = est.x == null ? est.tx : est.x + (est.tx - est.x) * 0.12; est.y = est.y == null ? est.ty : est.y + (est.ty - est.y) * 0.12; }
+  est.show += ((est.visible ? 1 : 0) - est.show) * 0.1;
+  draw(now); requestAnimationFrame(loop);
+}
+
+/* ---------- live data ---------- */
+const es = new EventSource("/stream");
+es.onmessage = ev => {
+  last = JSON.parse(ev.data);
+  if (!layout) return;   // geometry + saved layout still loading
+  for (const [k, d] of Object.entries(last.links || {})) {
+    const ok = d.age != null && d.age < 2, m = ok ? d.motion : 0;
+    if (!ok && motionNow[k] == null) continue;
+    // line brightness: motion above this path's own quiet level (slowly tracked minimum)
+    motionBase[k] = motionBase[k] == null ? m : Math.min(m, motionBase[k] + 0.0005);
+    motionNow[k] = Math.max(0, Math.min(1, (m - motionBase[k]) / (motionBase[k] * 1.5 + 0.02)));
+  }
+  const e = last.estimate, c = last.calib;
+  if (!c.trained) { $("#where-b").textContent = "–"; $("#where-s").textContent = c.counts && Object.keys(c.counts).length ? "record at least 2 things" : "not calibrated yet"; est.visible = false; }
+  else if (!e || (e.status !== "ok" && e.status !== "unsure")) { $("#where-s").textContent = e ? e.status : ""; }
+  else if (e.status === "unsure") {
+    const guess = e.best === "empty" ? "nobody" : ((c.spots[e.best] || {}).name || e.best);
+    $("#where-b").textContent = "Not sure"; $("#where-s").textContent = `maybe ${guess} · ${Math.round(100 * e.confidence)}%`; est.visible = false;
+  }
+  else {
+    const name = e.best === "empty" ? "Nobody" : ((c.spots[e.best] || {}).name || e.best);
+    // distance from the router, in metres (the plan's own per-axis scale; see toM)
+    let dist = "";
+    if (e.pos) { const pm = toM({ u: e.pos[0], v: e.pos[1] }), rm = toM(layout.router); dist = ` · ≈ ${Math.hypot(pm.X - rm.X, pm.Y - rm.Y).toFixed(1)} m from router`; }
+    $("#where-b").textContent = name; $("#where-s").textContent = `${Math.round(100 * e.confidence)}% sure${dist}`;
+    est.visible = !!e.pos; if (e.pos) { const [x, y] = toS({ u: e.pos[0], v: e.pos[1] }); est.tx = x; est.ty = y; }
+  }
+  const live = Object.entries(last.links || {}).filter(([, v]) => v.age != null && v.age < 3 && v.pps >= 3).length;
+  const used = (c.ids || []).length;
+  if (used && live > used) $("#hint").innerHTML = `<span style="color:#ffb547">Calibrated with ${used} of ${live} links — Clear all and recalibrate to use them all.</span>`;
+  $("#acc").textContent = c.acc == null ? "" : c.acc_kind === "across_rounds" ? `tested across ${c.rounds} rounds: ${Math.round(100 * c.acc)}%` : `same-session ${Math.round(100 * c.acc)}% (optimistic)`;
+  if (mode === "calib" && !recording && JSON.stringify(c.counts) !== renderSpots.lastCounts) { renderSpots.lastCounts = JSON.stringify(c.counts); renderSpots(); }
+};
+addEventListener("resize", fit);
+(async () => {
+  setupGeometry(await fetch("/api/config").then(r => r.json()));
+  if (PLAN) plan.src = PLAN.url;
+  const saved = await fetch("/api/layout").then(r => r.json()).catch(() => ({}));
+  layout = saved && saved.router ? saved : JSON.parse(JSON.stringify(DEFAULT_LAYOUT));
+  for (const id of Object.keys(NODE_COLOURS)) if (!layout.nodes[id]) layout.nodes[id] = DEFAULT_LAYOUT.nodes[id];
+  fit(); setMode("live"); requestAnimationFrame(loop);
+})();
+
+</script>
+</body>
+</html>

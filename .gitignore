@@ -1,0 +1,18 @@
+# your network details and recordings
+config.yaml
+data/
+# downloaded / generated
+firmware/.build/
+kit/web/vendor/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# never commit secrets or video material
+*-pass
+*.pass
+.env
+script/
+*.mov
+*.MOV
+*.mp4
