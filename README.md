@@ -1,5 +1,7 @@
 # wifi-sensing-kit
 
+![Camera covered — the WiFi alone guesses sitting, walking and squatting; the room camera in the corner is only there as proof](docs/demo.gif)
+
 Teach three $10 ESP32-S3 boards to recognise what you're doing — sitting, squatting, spinning,
 walking, jumping, standing, or nobody home — from your WiFi alone. Your webcam is the teacher
 while you train; then you cover it and the WiFi keeps going.
